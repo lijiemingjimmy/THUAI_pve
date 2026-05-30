@@ -91,6 +91,22 @@ class Agent(BaseAgent):
         if sell_action is not None:
             return sell_action
 
+        if self._carried_products() <= 0:
+            if self.env.board.at_factory(self.env.unit.x, self.env.unit.y):
+                tech = self._best_tech(mask)
+                if tech is not None:
+                    return tech
+            if self._should_return_for_tech():
+                move = self._move_to_factory(mask)
+                if move is not None:
+                    return move
+            if self._should_open_compute_center(mask):
+                if mask[Action.OCCUPY]:
+                    return int(Action.OCCUPY)
+                move = self._move_to_nearest_compute(mask)
+                if move is not None:
+                    return move
+
         if self._should_batch_buy_arbitrage(mask):
             return int(Action.BUY)
 
@@ -132,6 +148,20 @@ class Agent(BaseAgent):
             if best is None or value > best[0]:
                 best = (value, act)
         return None if best is None else int(best[1])
+
+    def _should_return_for_tech(self) -> bool:
+        if self.env.time > self.env.cfg.max_game_time * 0.65:
+            return False
+        if self._carried_products() > 0:
+            return False
+        wanted = []
+        if "marketing" not in self.env._techs_owned:
+            wanted.append(80)
+        if "cost_reduction" not in self.env._techs_owned:
+            wanted.append(50)
+        if not wanted or self.env.compute < min(wanted):
+            return False
+        return not self.env.board.at_factory(self.env.unit.x, self.env.unit.y)
 
     def _best_tech(self, mask: np.ndarray) -> Optional[int]:
         # Do not spend the first compute on market_analysis; it is transient and
@@ -201,8 +231,30 @@ class Agent(BaseAgent):
             return None
         return spread
 
+    def _opening_distances(self) -> tuple[Optional[int], Optional[int]]:
+        marker = id(self.env.board)
+        if getattr(self, "_distance_marker", None) == marker:
+            return self._opening_cc_dist, self._opening_market_dist
+        self._distance_marker = marker
+        start = (self.env.unit.x, self.env.unit.y)
+        cc_dist = None
+        for cc in self.env.board.compute_centers:
+            dist = self._distance_to_any_from(start, self._cells_within(cc.x, cc.y, 1))
+            if dist is not None and (cc_dist is None or dist < cc_dist):
+                cc_dist = dist
+        market_dist = None
+        for mkt in self.env.markets:
+            dist = self._distance_to_any_from(start, self._market_cells(mkt))
+            if dist is not None and (market_dist is None or dist < market_dist):
+                market_dist = dist
+        self._opening_cc_dist = cc_dist
+        self._opening_market_dist = market_dist
+        return cc_dist, market_dist
+
     def _should_open_compute_center(self, mask: np.ndarray) -> bool:
-        return False
+        _cc_dist, market_dist = self._opening_distances()
+        if market_dist is None or market_dist > 11:
+            return False
         if self.env.time > self.env.cfg.max_game_time * 0.45:
             return False
         if self.env.unit.raw_inv > 0 or self._carried_products() > 0:
